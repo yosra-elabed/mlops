@@ -1,75 +1,53 @@
-
 # ===== 1. Importer les bibliothèques =====
-
 import pandas as pd
 import mlflow
 import mlflow.sklearn
-
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-
-# ===== 2. Charger et préparer les données =====
-
+# ===== 2. Charger les données (une seule fois) =====
 df = pd.read_csv("churn_data.csv")
+y = df["churn"]  # 1 = part, 0 = reste
 
-# Transformer la colonne catégorielle "abonnement" en colonnes numériques
-X = pd.get_dummies(
-    df[["age", "salaire", "abonnement", "anciennete", "consommation"]],
-    drop_first=True
-)
+# ===== 3. Préparer les données pour une liste de colonnes =====
+def preparer(colonnes):
+    # get_dummies : transforme le texte 'abonnement' en colonnes 0/1
+    X = pd.get_dummies(df[colonnes], drop_first=True)
+    # 80 % apprentissage / 20 % test, découpage reproductible
+    return train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Variable cible : 1 = le client part, 0 = le client reste
-y = df["churn"]
+# ===== 4. Lancer UN essai et l'enregistrer dans MLflow =====
+def lancer_essai(nom, n_estimators, max_depth, colonnes):
+    X_train, X_test, y_train, y_test = preparer(colonnes)
+    with mlflow.start_run(run_name=nom):
+        model = RandomForestClassifier(
+            n_estimators=n_estimators, max_depth=max_depth, random_state=42)
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test)
 
-# Diviser les données : 80 % pour l'entraînement et 20 % pour le test
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.2,
-    random_state=42
-)
+        # Paramètres : les réglages de l'essai
+        mlflow.log_param("n_estimators", n_estimators)
+        mlflow.log_param("max_depth", max_depth)
+        mlflow.log_param("features", ",".join(colonnes))
 
+        # Métriques : les résultats de l'essai
+        mlflow.log_metric("accuracy", accuracy_score(y_test, pred))
+        mlflow.log_metric("precision", precision_score(y_test, pred, zero_division=0))
+        mlflow.log_metric("recall", recall_score(y_test, pred, zero_division=0))
+        mlflow.log_metric("f1", f1_score(y_test, pred, zero_division=0))
 
-# ===== 3. Choisir l'expérience MLflow =====
+        # Artifact : le modèle sauvegardé dans ce run
+        mlflow.sklearn.log_model(model, name="model",
+                                 serialization_format="cloudpickle")
 
+        print(nom, "-> accuracy :", round(accuracy_score(y_test, pred), 3),
+              "| f1 :", round(f1_score(y_test, pred, zero_division=0), 3))
+
+# ===== 5. Programme principal =====
 mlflow.set_experiment("churn-prediction")
+TOUT = ["age", "salaire", "abonnement", "anciennete", "consommation"]
 
-
-# ===== 4. Entraîner le modèle et enregistrer les résultats =====
-
-with mlflow.start_run(run_name="essai-1"):
-
-    # Créer le modèle Random Forest avec ses paramètres
-    model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=5,
-        random_state=42
-    )
-
-    # Entraîner le modèle
-    model.fit(X_train, y_train)
-
-    # Prédire les résultats sur les données de test
-    y_pred = model.predict(X_test)
-
-    # Calculer la précision du modèle
-    acc = accuracy_score(y_test, y_pred)
-
-    # Enregistrer les paramètres dans MLflow
-    mlflow.log_param("n_estimators", 100)
-    mlflow.log_param("max_depth", 5)
-
-    # Enregistrer la métrique de performance
-    mlflow.log_metric("accuracy", acc)
-
-    # Enregistrer le modèle entraîné
-    mlflow.sklearn.log_model(
-        model,
-        name="model",
-        serialization_format="cloudpickle"
-    )
-
-    # Afficher la précision dans le terminal
-    print("Accuracy :", acc)
+lancer_essai("essai-1", 100, 5, TOUT)
+lancer_essai("essai-2", 50, 3, TOUT)
+lancer_essai("essai-3", 100, 5, ["age", "abonnement", "anciennete", "consommation"])
